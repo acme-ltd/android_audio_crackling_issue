@@ -1,0 +1,207 @@
+<html>
+<head>
+<title>TEST</title>
+<script>
+function test(){
+	function randomInt(min, max) {
+	  min = Math.ceil(min);
+	  max = Math.floor(max);
+	  return Math.floor(Math.random() * (max - min + 1) + min);
+	}
+
+	async function startRecording(track, lengthInMS, name) {
+		let stream = new MediaStream();
+
+		let audioSettings = track.getSettings();
+		stream.addTrack(track);
+		
+		let recorder = new MediaRecorder(stream, {
+			mimeType : "audio/webm;codecs=pcm"
+		});
+		
+		let data = [];
+
+		recorder.ondataavailable = (event) => data.push(event.data);
+		recorder.start();
+		console.log(recorder.state + " for " + lengthInMS / 1000 + " seconds...");
+
+		let stopped = new Promise((resolve, reject) => {
+			recorder.onstop = resolve;
+			recorder.onerror = (event) => reject(event.name);
+		});
+
+		let recorded = new Promise(resolve => {
+			setTimeout(() => {
+				recorder.state == "recording" && recorder.stop();
+				resolve();
+			}, lengthInMS);
+		});
+
+		await Promise.all([stopped, recorded]).then(() => data);
+
+		let fullData = new Blob(data, { type : data[0].type });
+
+		let a = document.createElement("a");
+		a.innerText = "DOWNLOAD!";
+		a.href = URL.createObjectURL(fullData);
+		a.target = '_blank';
+		a.download = "record " + name + ".webm";
+		a.click();
+	}
+	
+	
+	function createVideoRender(name, event){
+		let node = document.createElement("div");
+		document.body.appendChild(node);
+		
+		let nameNode = document.createElement("div");
+		nameNode.innerText = name + " track";
+		node.appendChild(nameNode);
+		
+		let videoNode = document.createElement(event.track.kind);
+		let stream = new MediaStream();
+		stream.addTrack(event.track);
+		videoNode.srcObject = stream;
+		videoNode.audtoplay = true;
+		videoNode.controls = true;
+		node.appendChild(videoNode);
+	}
+
+	navigator.mediaDevices.getUserMedia({
+	  audio : true,
+	  video : {
+		width : {
+			ideal : 1920
+		},
+		height : {
+			ideal : 1080
+		}
+	  }
+	}).then(async stream => {
+		let microTrack = stream.getAudioTracks()[0];
+		let videoTrack = stream.getVideoTracks()[0];
+		
+		let sampleRate = microTrack.getSettings().sampleRate;
+		
+		let audioContext = new AudioContext({sampleRate});
+
+		//let gain = audioContext.createGain();
+		let dstNode = audioContext.createMediaStreamDestination();
+		//gain.connect(dstNode);
+
+		let dstTrack = dstNode.stream.getTracks()[0];
+
+		let node = audioContext.createMediaStreamSource(stream);
+		node.connect(dstNode);
+		
+		
+		let pc1 = new RTCPeerConnection();
+		let pc2 = new RTCPeerConnection();
+		
+		pc1.addEventListener("icecandidate", evt => pc2.addIceCandidate(evt.candidate));
+		pc2.addEventListener("icecandidate", evt => pc1.addIceCandidate(evt.candidate));
+		
+		pc1.addEventListener("track", evt => createVideoRender("pc1", evt));
+		pc2.addEventListener("track", evt => createVideoRender("pc2", evt));
+		
+		pc1.addTransceiver("video", {direction:"sendonly"});
+		
+	    let pc1Offer = await pc1.createOffer();
+		await pc1.setLocalDescription(pc1Offer);
+		
+		await pc2.setRemoteDescription(pc1Offer);
+		let pc2Answer = await pc2.createAnswer();
+		await pc2.setLocalDescription(pc2Answer);
+		await pc1.setRemoteDescription(pc2Answer);
+		
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		
+		let syncStream = new MediaStream();
+		syncStream.addTrack(videoTrack);
+		syncStream.addTrack(dstTrack);
+		
+		let trans1 = await pc2.addTransceiver(videoTrack, {direction : "sendonly"}, [syncStream]);
+		let params1 = trans1.sender.getParameters();
+		params1.encodings = [
+			{
+				maxBitrate : 2_600_000,
+				maxFramerate : 30,
+				scaleResolutionDownBy : 1
+			}
+		];
+		await trans1.sender.setParameters(params1);
+		
+	    setInterval(() => {
+		    let params1 = trans1.sender.getParameters();
+			params1.encodings[0].maxBitrate = randomInt(2_000_000, 3_000_000);
+			trans1.sender.setParameters(params1);
+		}, 1000);
+		
+		let trans2 = await pc2.addTransceiver(videoTrack, {
+			direction : "sendonly",
+		}
+		[syncStream]
+		);
+		
+		let params2 = trans2.sender.getParameters();
+		params2.encodings = [
+			{
+				maxBitrate : 1_400_000,
+				maxFramerate : 30,
+				scaleResolutionDownBy : 1.5
+			}
+		];
+		await trans2.sender.setParameters(params2);
+		
+		setInterval(() => {
+		    let params2 = trans2.sender.getParameters();
+			params2.encodings[0].maxBitrate = randomInt(1_100_000, 1_700_000);
+			trans2.sender.setParameters(params2);
+		}, 1000);
+		
+		let trans3 =await pc2.addTransceiver(videoTrack, {
+
+			direction : "sendonly",
+		}
+		[syncStream]
+		);
+		
+		let params3 = trans3.sender.getParameters();
+		params3.encodings = [
+			{
+				maxBitrate : 1_000_000,
+				maxFramerate : 30,
+				scaleResolutionDownBy : 3
+			}
+		];
+		await trans3.sender.setParameters(params3);
+		
+		setInterval(() => {
+		    let params3 = trans3.sender.getParameters();
+			params3.encodings[0].maxBitrate = randomInt(800_000, 1_200_000);
+			trans3.sender.setParameters(params3);
+		}, 1000);
+		
+		await pc2.addTransceiver(dstTrack, { direction : "sendonly"}, [syncStream]);
+		
+		
+		let pc2Offer = await pc2.createOffer();
+		await pc2.setLocalDescription(pc2Offer);
+		
+		await pc1.setRemoteDescription(pc2Offer);
+		let pc1Answer = await pc1.createAnswer();
+		await pc1.setLocalDescription(pc1Answer);
+		await pc2.setRemoteDescription(pc1Answer);
+		
+		
+		let t = Date.now();
+		startRecording(stream.getTracks()[0], 20 * 1000, "audio_from_micro_" + t);
+		startRecording(dstTrack, 20 * 1000, "audio_after_gain_" + t);
+	});
+}
+</script>
+</head>
+<body>
+<a href="#" onclick="test()">START!</a>
+</body>
+</html>
